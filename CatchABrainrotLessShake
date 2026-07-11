@@ -1,0 +1,103 @@
+local RS = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+local Modules = RS:WaitForChild("Modules")
+local ShakeCameraModule = Modules:WaitForChild("ShakeCamera")
+local ShakeDirectionModule = Modules:WaitForChild("ShakeCameraDirection")
+local ShakeCamera = require(ShakeCameraModule)
+local ShakeDirection = require(ShakeDirectionModule)
+local CameraModifier = require(Modules:WaitForChild("CameraModifier"))
+local WigglePunchVI = require(Modules:WaitForChild("WigglePunchVI"))
+local WigglePunchV = require(Modules:WaitForChild("WigglePunchV"))
+local ActiveBattleID = require(RS:WaitForChild("Brainrot"):WaitForChild("Battle"):WaitForChild("ActiveBattleID"))
+local Environment = typeof(getgenv) == "function" and getgenv() or _G
+
+if typeof(Environment.HowlNoCameraShakeCleanup) == "function" then
+    pcall(Environment.HowlNoCameraShakeCleanup)
+end
+
+local DisabledConnections = {}
+local HookRestores = {}
+local OriginalDirectionPunch = ShakeDirection.Punch
+local OriginalWigglePunch = WigglePunchVI.Punch
+local OriginalConnectPunch = CameraModifier.ConnectPunch
+local Noop = function() end
+local Zero = function() return 0 end
+local RenderName = "HowlNoCameraShake"
+local SmoothedCFrame = nil
+local SmoothedFocus = nil
+
+local function Hook(Target, Replacement)
+    if typeof(hookfunction) ~= "function" or typeof(Target) ~= "function" then return end
+    local Original = hookfunction(Target, Replacement)
+    table.insert(HookRestores, { Target = Target, Original = Original })
+end
+
+Hook(ShakeCamera, Noop)
+Hook(OriginalDirectionPunch, Noop)
+Hook(OriginalWigglePunch, Zero)
+Hook(WigglePunchV, Zero)
+
+ShakeDirection.Punch = Noop
+WigglePunchVI.Punch = Zero
+CameraModifier.ConnectPunch = function()
+    return { Dead = false, Destroy = function(self) self.Dead = true end }
+end
+
+if typeof(getconnections) == "function" then
+    for _, Module in ipairs({ ShakeCameraModule, ShakeDirectionModule }) do
+        local Event = Module:FindFirstChild("ForActors")
+        if Event and Event:IsA("BindableEvent") then
+            for _, Connection in ipairs(getconnections(Event.Event)) do
+                local Disabled = pcall(function() Connection:Disable() end)
+                if Disabled then table.insert(DisabledConnections, Connection) end
+            end
+        end
+    end
+end
+
+local function IsInBattle()
+    local QuickString = ActiveBattleID and ActiveBattleID.QuickString
+    local Value = QuickString and QuickString.Value
+    return Value ~= nil and Value ~= "" and Value ~= "NONE"
+end
+
+RunService:BindToRenderStep(RenderName, Enum.RenderPriority.Camera.Value + 100, function(DeltaTime)
+    local Camera = workspace.CurrentCamera
+    if not Camera or not IsInBattle() then
+        SmoothedCFrame = nil
+        SmoothedFocus = nil
+        return
+    end
+    local TargetCFrame = Camera.CFrame
+    local TargetFocus = Camera.Focus
+    if not SmoothedCFrame or (TargetCFrame.Position - SmoothedCFrame.Position).Magnitude > 40 then
+        SmoothedCFrame = TargetCFrame
+        SmoothedFocus = TargetFocus
+    else
+        local Alpha = 1 - math.exp(-DeltaTime * 7)
+        SmoothedCFrame = SmoothedCFrame:Lerp(TargetCFrame, Alpha)
+        SmoothedFocus = SmoothedFocus:Lerp(TargetFocus, Alpha)
+    end
+    Camera.CFrame = SmoothedCFrame
+    Camera.Focus = SmoothedFocus
+end)
+
+local function Cleanup()
+    RunService:UnbindFromRenderStep(RenderName)
+    ShakeDirection.Punch = OriginalDirectionPunch
+    WigglePunchVI.Punch = OriginalWigglePunch
+    CameraModifier.ConnectPunch = OriginalConnectPunch
+    for i = #HookRestores, 1, -1 do
+        local Item = HookRestores[i]
+        pcall(hookfunction, Item.Target, Item.Original)
+    end
+    for _, Connection in ipairs(DisabledConnections) do
+        pcall(function() Connection:Enable() end)
+    end
+    table.clear(HookRestores)
+    table.clear(DisabledConnections)
+    Environment.HowlNoCameraShakeCleanup = nil
+end
+
+Environment.HowlNoCameraShakeCleanup = Cleanup
+return Cleanup
